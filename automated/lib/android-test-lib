@@ -1,0 +1,194 @@
+#!/bin/sh
+
+install_latest_adb() {
+    install_deps "wget zip"
+    wget -S --progress=dot:giga https://dl.google.com/android/repository/platform-tools-latest-linux.zip
+    unzip -q platform-tools-latest-linux.zip
+    export PATH=$PWD/platform-tools:$PATH
+    which adb
+    adb version
+}
+
+initialize_adb() {
+    which lava-lxc-device-add && lava-lxc-device-add
+    adb start-server
+    adb devices
+
+    if [ -z "${ANDROID_SERIAL}" ]; then
+        number="$(adb devices | grep -wc 'device')"
+        if [ "${number}" -gt 1 ]; then
+            error_msg "More than one device or emulator found! Please set ANDROID_SERIAL from test script."
+        elif [ "${number}" -eq 1 ]; then
+            ANDROID_SERIAL="$(adb get-serialno)"
+        else
+            error_msg "Device NOT found"
+        fi
+    fi
+    export ANDROID_SERIAL
+    info_msg "Default adb device: ${ANDROID_SERIAL}"
+    adb wait-for-device
+
+    if adb shell echo "Testing adb connectivity"; then
+        info_msg "Connected to device ${ANDROID_SERIAL} successfully"
+    else
+        error_msg "Unable to connect to device ${ANDROID_SERIAL}"
+    fi
+}
+
+adb_root() {
+    if [ "$(adb shell whoami)" = "root" ]; then
+        echo "DUT already has adbd running as root"
+    else
+        adb root &
+        which lava-lxc-device-wait-add && lava-lxc-device-wait-add
+        which lava-lxc-device-add && lava-lxc-device-add
+        adb wait-for-device
+        adb devices
+    fi
+}
+
+wait_boot_completed() {
+    [ "$#" -ne 1 ] && error_msg "Usage: wait_for_boot_completed timeout_in_seconds"
+    timeout="$1"
+    end=$(( $(date +%s) + timeout ))
+
+    boot_completed=false
+    while [ "$(date +%s)" -lt "$end" ]; do
+        if adb shell getprop sys.boot_completed | grep "1"; then
+            boot_completed=true
+            break
+        else
+            sleep 3
+        fi
+    done
+
+    if "${boot_completed}"; then
+        info_msg "Target booted up completely."
+    else
+        error_msg "wait_boot_completed timed out after ${timeout} seconds"
+    fi
+}
+
+wait_homescreen() {
+    [ "$#" -ne 1 ] && error_msg "Usage: wait_homescreen timeout_in_seconds"
+    timeout="$1"
+    end=$(( $(date +%s) + timeout ))
+
+    homescreen_displayed=false
+    while [ "$(date +%s)" -lt "$end" ]; do
+        if adb logcat -sd ActivityManager:I | grep "Displayed com.android.launcher"; then
+            homescreen_displayed=true
+            break
+        else
+            sleep 3
+        fi
+    done
+
+    if "${homescreen_displayed}"; then
+        info_msg "Target booted to homescreen successfully."
+    else
+        error_msg "wait_homescreen timed out after ${timeout} seconds"
+    fi
+}
+
+detect_abi() {
+    # "| tr -d '\r'" is needed here, refer to the below issue.
+    # https://code.google.com/p/android/issues/detail?id=2482
+    abi="$(adb shell uname -m | tr -d '\r')"
+    case $abi in
+      armv7|armv7l|armv7el|armv7lh) abi="armeabi" ;;
+      arm64|armv8|arm64-v8a|aarch64) abi="arm64" ;;
+      *) error_msg "Unknown architecture" ;;
+    esac
+    info_msg "ABI: ${abi}"
+}
+
+# install() push binary or script file to '/system/bin' so that you can run it
+# without absolute/relative path. If '/system' is always read-only(like LCR),
+# please use adb_push() instead to push binary or file to somewhere that 'rw'
+# permission granted, like '/data/local/tmp', and run it from there.
+install() {
+    [ "$#" -ne 1 ] && error_msg "Usage: install <file_path>"
+    file_path="$1"
+    file_name="$(basename "${file_path}")"
+
+    if adb shell mount | grep system | grep -q ro; then
+        # Remounts the /system partition on the device read-write
+        info_msg "/system partition is read-only, remounting it read-write..."
+        # Because of https://bugs.linaro.org/show_bug.cgi?id=2888, this
+        # function wouldn't work in LAVA v2 LXC until the bug get addressed.
+        adb root
+        adb remount
+    fi
+
+    info_msg "Installing ${file_name}"
+    adb push "${file_path}"  "/system/bin/"
+    adb shell chmod 755  "/system/bin/${file_name}"
+}
+
+adb_push() {
+    [ "$#" -ne 2 ] && error_msg "Usage: adb_push <local> <remote>"
+    local="$1"
+    remote="$2"
+
+    adb shell mkdir -p "${remote}"
+    info_msg "Pushing ${local} to devcie ${ANDROID_SERIAL}"
+    adb push "${local}" "${remote}"
+
+    # Set 755 permission on the folder/file pushed to device.
+    if [ -d "${local}" ]; then
+        adb shell chmod -R 755 "${remote}"
+    elif [ -f "${local}" ]; then
+        adb shell chmod -R 755 "$(echo "${remote}" | sed 's|/$||')/$(basename "${local}")"
+    fi
+}
+
+adb_pull() {
+    [ "$#" -ne 2 ] && error_msg "Usage: adb_pull <remote> <local>"
+    remote="$1"
+    local="$2"
+
+    info_msg "Pulling ${remote} from devcie ${ANDROID_SERIAL}"
+    adb pull "${remote}" "${local}"
+}
+
+adb_shell_which() {
+    [ "$#" -ne 1 ] && error_msg "Usage: adb_shell_which <cmd>"
+    cmd="$1"
+    # Only latest version adb able to return exit code.
+    # Check if output of which is empty is a more reliable way.
+    which_output="$(adb shell "echo which ${cmd} | su")"
+    info_msg "Output of which: *${which_output}*"
+    if [ -n "${which_output}" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+disable_suspend() {
+   echo "Now disable the suspend feature..."
+   adb shell input keyevent 82  ##unlock the home screen
+   adb shell "echo lock_me > /sys/power/wake_lock"
+   echo "The suspend feature is disabled."
+}
+
+parse_common_args() {
+    while getopts ":s:t:" opt; do
+        case "${opt}" in
+            # Specify device serial number when more than one device connected.
+            s)
+                ANDROID_SERIAL="${OPTARG}"
+                ;;
+            # Specify timeout in seconds for wait_boot_completed.
+            t)
+                BOOT_TIMEOUT="${OPTARG}"
+                export BOOT_TIMEOUT
+                ;;
+            *)
+                echo "Usage: $0 [-s <android_serial>] [-t <boot_timeout>]" 1>&2
+                exit 1
+                ;;
+        esac
+    done
+}

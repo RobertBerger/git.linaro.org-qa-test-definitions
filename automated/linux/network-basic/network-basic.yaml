@@ -1,0 +1,37 @@
+metadata:
+    format: Lava-Test Test Definition 1.0
+    name: network-tests-basic
+    description: "Basic network test commands"
+    maintainer:
+        - milosz.wasilewski@linaro.org
+        - naresh.kamboju@linaro.org
+    os:
+        - debian
+        - ubuntu
+        - centos
+        - fedora
+    scope:
+        - functional
+    devices:
+        - panda
+        - panda-es
+        - vexpress-tc2
+        - juno
+        - d03
+        - d05
+        - overdrive
+        - mustang
+        - moonshot
+        - thunderX
+        - hi6220-hikey
+        - apq8016-sbc
+
+params:
+    INTERFACE: eth0
+    SKIP_INSTALL: "False"
+
+run:
+    steps:
+        - cd ./automated/linux/network-basic/
+        - ./network-basic.sh -s "${SKIP_INSTALL}" -i "${INTERFACE}"
+        - ../../utils/send-to-lava.sh ./output/result.txt

@@ -1,0 +1,54 @@
+metadata:
+    name: kvm
+    format: "Lava-Test-Shell Test Definition 1.0"
+    description: "Start KVM for secondary testing"
+    maintainer:
+        - riku.voipio@linaro.org
+    scope:
+        - functional
+        - virtualization
+    os:
+        - ubuntu
+    devices:
+        - arndale
+        - vexpress-tc2
+        - mustang
+        - midway
+        - juno
+
+params:
+    # guest architecture for constructing qemu command line
+    GUEST_ARCH: aarch64
+    # URL to cloud-init enabled guest image
+    GUEST_IMAGE: https://cloud-images.ubuntu.com/xenial/current/xenial-server-cloudimg-arm64-uefi1.img
+    # Bios or firmware needed to boot
+    GUEST_FIRMWARE: https://releases.linaro.org/components/kernel/uefi-linaro/15.12/release/qemu64/QEMU_EFI.fd
+    # kernel for platforms that are booted without firmware
+    GUEST_KERNEL: none
+    # how many cores to allocate to guest
+    GUEST_CORES: "2"
+    # how much RAM allocate to guest
+    GUEST_RAM: "1024"
+
+install:
+    deps:
+        - qemu-system
+        - qemu-utils
+        - bridge-utils
+        - uml-utilities
+        - curl
+        - hwloc-nox
+        - cloud-utils
+        - genisoimage
+
+run:
+    steps:
+        - cd ./automated/linux/kvm
+        - "lava-test-case kvm-init --shell [ -c /dev/kvm ]"
+        - sudo ./start-kvm.sh $GUEST_ARCH $GUEST_IMAGE $GUEST_FIRMWARE $GUEST_KERNEL $GUEST_CORES $GUEST_RAM
+        - lava-send ipv4 ipaddr=$(./wait-ip.py)
+        - lava-send lava_start
+        - lava-sync clients
+        - sudo ./wait-kvm.sh /run/qemu.pid
+        - cat *.log
+
