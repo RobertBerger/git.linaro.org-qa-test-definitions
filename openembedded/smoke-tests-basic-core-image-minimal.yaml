@@ -17,6 +17,4 @@ run:
         - lava-test-case linux-linaro-openembedded-uname --shell uname -a
         - lava-test-case linux-linaro-openembedded-vmstat --shell vmstat
         - lava-test-case linux-linaro-openembedded-ifconfig --shell ifconfig -a
-        - lava-test-case linux-linaro-openembedded-lscpu --shell lscpu
-        - lava-test-case linux-linaro-openembedded-lsusb --shell lsusb
         - lava-test-case linux-linaro-openembedded-lsb_release --shell lsb_release -a
